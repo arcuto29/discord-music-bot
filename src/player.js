@@ -69,7 +69,7 @@ async function playSong(guildId, song) {
       });
     }
 
-    // Now stream the audio URL through FFmpeg
+    // Now stream the audio URL through FFmpeg -> output OGG Opus (Discord native format)
     const ffmpegProcess = spawn(FFMPEG_PATH, [
       '-reconnect', '1',
       '-reconnect_streamed', '1',
@@ -77,9 +77,11 @@ async function playSong(guildId, song) {
       '-i', audioUrl,
       '-analyzeduration', '0',
       '-loglevel', 'error',
-      '-f', 's16le',
+      '-acodec', 'libopus',
+      '-f', 'ogg',
       '-ar', '48000',
       '-ac', '2',
+      '-b:a', '96k',
       'pipe:1',
     ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 
@@ -97,7 +99,7 @@ async function playSong(guildId, song) {
     });
 
     const resource = createAudioResource(ffmpegProcess.stdout, {
-      inputType: StreamType.Raw,
+      inputType: StreamType.OggOpus,
     });
 
     queue.player.play(resource);
@@ -147,9 +149,11 @@ async function playRadio(guildId, station) {
       '-i', station.url,
       '-analyzeduration', '0',
       '-loglevel', 'error',
-      '-f', 's16le',
+      '-acodec', 'libopus',
+      '-f', 'ogg',
       '-ar', '48000',
       '-ac', '2',
+      '-b:a', '96k',
       'pipe:1',
     ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 
@@ -185,7 +189,7 @@ async function playRadio(guildId, station) {
     if (hasErrored) return;
 
     const resource = createAudioResource(ffmpegProcess.stdout, {
-      inputType: StreamType.Raw,
+      inputType: StreamType.OggOpus,
     });
 
     queue.player.play(resource);

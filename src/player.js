@@ -47,14 +47,14 @@ async function playSong(guildId, song) {
         song.url,
       ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     } else {
-      // YouTube or other: use yt-dlp with web_creator bypass
+      // YouTube or other: use yt-dlp with mediaconnect bypass
       process = spawn('yt-dlp', [
         '-f', 'bestaudio[ext=webm]/bestaudio',
         '-o', '-',
         '--quiet',
         '--no-warnings',
         '--no-playlist',
-        '--extractor-args', 'youtube:player_client=web_creator',
+        '--extractor-args', 'youtube:player_client=mediaconnect',
         song.url,
       ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     }

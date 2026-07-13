@@ -72,31 +72,36 @@ async function playRadio(guildId, station) {
   const queue = getQueue(guildId);
 
   try {
-    const { exec } = require('child_process');
-    const { Readable } = require('stream');
+    const { spawn } = require('child_process');
 
-    // Use prism-media (bundled with @discordjs/voice) for FFmpeg
-    const prism = require('prism-media');
+    // Spawn FFmpeg directly — this works on all platforms
+    const ffmpegProcess = spawn('ffmpeg', [
+      '-reconnect', '1',
+      '-reconnect_streamed', '1',
+      '-reconnect_delay_max', '5',
+      '-i', station.url,
+      '-analyzeduration', '0',
+      '-loglevel', '0',
+      '-f', 's16le',
+      '-ar', '48000',
+      '-ac', '2',
+      'pipe:1',
+    ], { windowsHide: true });
 
-    const ffmpeg = new prism.FFmpeg({
-      args: [
-        '-reconnect', '1',
-        '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '5',
-        '-i', station.url,
-        '-analyzeduration', '0',
-        '-loglevel', '0',
-        '-f', 's16le',
-        '-ar', '48000',
-        '-ac', '2',
-      ],
+    ffmpegProcess.on('error', (err) => {
+      console.error('FFmpeg spawn error:', err.message);
+      queue.textChannel.send(`❌ FFmpeg error: ${err.message}\nMake sure FFmpeg is installed and in your PATH.`);
     });
 
-    ffmpeg.on('error', (err) => {
-      console.error('FFmpeg radio error:', err.message);
+    ffmpegProcess.stderr.on('data', (data) => {
+      // Only log actual errors, not info
+      const msg = data.toString();
+      if (msg.toLowerCase().includes('error')) {
+        console.error('FFmpeg:', msg);
+      }
     });
 
-    const resource = createAudioResource(ffmpeg, {
+    const resource = createAudioResource(ffmpegProcess.stdout, {
       inputType: StreamType.Raw,
       inlineVolume: true,
     });
@@ -109,7 +114,7 @@ async function playRadio(guildId, station) {
     queue.playing = true;
     queue.paused = false;
     queue.radio = station;
-    queue.radioProcess = ffmpeg;
+    queue.radioProcess = ffmpegProcess;
 
     queue.textChannel.send(
       `📻 **Radio: ${station.name}**\n` +

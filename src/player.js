@@ -25,7 +25,6 @@ async function playSong(guildId, song) {
   const queue = getQueue(guildId);
 
   if (!song) {
-    // No more songs — leave after 2 minutes of inactivity
     setTimeout(() => {
       const currentQueue = getQueue(guildId);
       if (currentQueue && currentQueue.songs.length === 0 && !currentQueue.radio) {
@@ -41,40 +40,18 @@ async function playSong(guildId, song) {
   try {
     const { spawn } = require('child_process');
 
-    // Use FFmpeg to stream directly from the URL
-    // FFmpeg can handle YouTube URLs via its built-in protocol handlers
-    // But for YouTube we need yt-dlp to get the direct audio URL first
-    let audioUrl = song.url;
+    // Use yt-dlp to pipe audio directly to FFmpeg, then to Discord
+    // yt-dlp outputs audio -> FFmpeg converts -> pipe to discord.js
+    const ytdlp = spawn('yt-dlp', [
+      '--no-warnings',
+      '-f', 'bestaudio',
+      '-o', '-',
+      '--quiet',
+      song.url,
+    ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 
-    // If it's a YouTube URL, use yt-dlp to extract the direct audio URL
-    if (song.url.includes('youtube.com') || song.url.includes('youtu.be')) {
-      const ytdlp = spawn('yt-dlp', [
-        '--no-warnings',
-        '-f', 'bestaudio',
-        '--get-url',
-        song.url,
-      ], { windowsHide: true });
-
-      audioUrl = await new Promise((resolve, reject) => {
-        let data = '';
-        ytdlp.stdout.on('data', (chunk) => { data += chunk.toString(); });
-        ytdlp.on('close', (code) => {
-          if (code === 0 && data.trim()) {
-            resolve(data.trim().split('\n')[0]);
-          } else {
-            reject(new Error('yt-dlp failed to get URL'));
-          }
-        });
-        ytdlp.on('error', () => reject(new Error('yt-dlp not found. Install: https://github.com/yt-dlp/yt-dlp')));
-      });
-    }
-
-    // Now stream the audio URL through FFmpeg -> output OGG Opus (Discord native format)
     const ffmpegProcess = spawn(FFMPEG_PATH, [
-      '-reconnect', '1',
-      '-reconnect_streamed', '1',
-      '-reconnect_delay_max', '5',
-      '-i', audioUrl,
+      '-i', 'pipe:0',
       '-analyzeduration', '0',
       '-loglevel', 'error',
       '-acodec', 'libopus',
@@ -83,15 +60,24 @@ async function playSong(guildId, song) {
       '-ac', '2',
       '-b:a', '96k',
       'pipe:1',
-    ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    ], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
 
+    // Pipe yt-dlp output into FFmpeg input
+    ytdlp.stdout.pipe(ffmpegProcess.stdin);
+
+    ytdlp.stderr.on('data', (data) => {
+      console.error('yt-dlp error:', data.toString());
+    });
     ffmpegProcess.stderr.on('data', (data) => {
-      console.error('FFmpeg song error:', data.toString());
+      console.error('FFmpeg error:', data.toString());
+    });
+    ytdlp.on('error', (err) => {
+      console.error('yt-dlp spawn error:', err.message);
     });
 
-    // Wait for data
+    // Wait for FFmpeg to produce data
     await new Promise((resolve) => {
-      const timeout = setTimeout(resolve, 3000);
+      const timeout = setTimeout(resolve, 5000);
       ffmpegProcess.stdout.once('readable', () => {
         clearTimeout(timeout);
         resolve();
@@ -117,7 +103,6 @@ async function playSong(guildId, song) {
     console.error('Error playing song:', error);
     queue.textChannel.send(`❌ Couldn't play **${song.title}** — skipping.\nReason: ${error.message}`);
 
-    // Skip to next song
     queue.songs.shift();
     if (queue.songs.length > 0) {
       playSong(guildId, queue.songs[0]);

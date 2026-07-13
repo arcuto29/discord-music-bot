@@ -40,58 +40,33 @@ async function playSong(guildId, song) {
   try {
     const { spawn } = require('child_process');
 
-    // Use yt-dlp to pipe audio directly to FFmpeg, then to Discord
-    // yt-dlp outputs audio -> FFmpeg converts -> pipe to discord.js
-    const ytdlp = spawn('yt-dlp', [
-      '--no-warnings',
+    // yt-dlp pipes raw audio to stdout, discord.js handles the rest
+    const process = spawn('yt-dlp', [
       '-f', 'bestaudio',
       '-o', '-',
       '--quiet',
+      '--no-warnings',
       song.url,
     ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 
-    const ffmpegProcess = spawn(FFMPEG_PATH, [
-      '-i', 'pipe:0',
-      '-analyzeduration', '0',
-      '-loglevel', 'error',
-      '-acodec', 'libopus',
-      '-f', 'ogg',
-      '-ar', '48000',
-      '-ac', '2',
-      '-b:a', '96k',
-      'pipe:1',
-    ], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    process.stderr.on('data', (d) => console.error('yt-dlp:', d.toString()));
+    process.on('error', (e) => console.error('yt-dlp spawn error:', e.message));
 
-    // Pipe yt-dlp output into FFmpeg input
-    ytdlp.stdout.pipe(ffmpegProcess.stdin);
-
-    ytdlp.stderr.on('data', (data) => {
-      console.error('yt-dlp error:', data.toString());
-    });
-    ffmpegProcess.stderr.on('data', (data) => {
-      console.error('FFmpeg error:', data.toString());
-    });
-    ytdlp.on('error', (err) => {
-      console.error('yt-dlp spawn error:', err.message);
+    const resource = createAudioResource(process.stdout, {
+      inputType: StreamType.Arbitrary,
     });
 
-    // Wait for FFmpeg to produce data
-    await new Promise((resolve) => {
-      const timeout = setTimeout(resolve, 5000);
-      ffmpegProcess.stdout.once('readable', () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-    });
-
-    const resource = createAudioResource(ffmpegProcess.stdout, {
-      inputType: StreamType.OggOpus,
-    });
+    resource.playStream.on('error', (e) => console.error('Stream error:', e));
 
     queue.player.play(resource);
     queue.playing = true;
     queue.paused = false;
-    queue.radioProcess = ffmpegProcess;
+    queue.radioProcess = process;
+
+    // Log player state changes for debugging
+    queue.player.on('stateChange', (oldState, newState) => {
+      console.log(`Player: ${oldState.status} -> ${newState.status}`);
+    });
 
     queue.textChannel.send(
       `🎶 **Now Playing:**\n` +
@@ -125,8 +100,7 @@ async function playRadio(guildId, station) {
       queue.radioProcess = null;
     }
 
-    // Spawn FFmpeg to fetch radio stream and output raw PCM s16le
-    // Discord.js @discordjs/voice handles Raw PCM at 48kHz stereo
+    // Spawn FFmpeg to fetch and stream radio audio
     const ffmpegProcess = spawn(FFMPEG_PATH, [
       '-reconnect', '1',
       '-reconnect_streamed', '1',
@@ -134,11 +108,10 @@ async function playRadio(guildId, station) {
       '-i', station.url,
       '-analyzeduration', '0',
       '-loglevel', 'error',
-      '-acodec', 'libopus',
-      '-f', 'ogg',
+      '-vn',
+      '-f', 'mp3',
       '-ar', '48000',
       '-ac', '2',
-      '-b:a', '96k',
       'pipe:1',
     ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 
@@ -155,26 +128,22 @@ async function playRadio(guildId, station) {
     });
 
     ffmpegProcess.on('close', (code) => {
-      console.log('FFmpeg process closed with code:', code);
+      console.log('FFmpeg radio closed with code:', code);
     });
 
-    // Wait for FFmpeg to connect and start producing audio data
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => resolve(), 3000);
+    // Wait for FFmpeg to start producing data
+    await new Promise((resolve) => {
+      const timeout = setTimeout(resolve, 5000);
       ffmpegProcess.stdout.once('readable', () => {
         clearTimeout(timeout);
         resolve();
-      });
-      ffmpegProcess.once('error', () => {
-        clearTimeout(timeout);
-        reject(new Error('FFmpeg failed to start'));
       });
     });
 
     if (hasErrored) return;
 
     const resource = createAudioResource(ffmpegProcess.stdout, {
-      inputType: StreamType.OggOpus,
+      inputType: StreamType.Arbitrary,
     });
 
     queue.player.play(resource);

@@ -74,7 +74,14 @@ async function playRadio(guildId, station) {
   try {
     const { spawn } = require('child_process');
 
-    // Spawn FFmpeg directly — this works on all platforms
+    // Kill any existing radio process
+    if (queue.radioProcess) {
+      try { queue.radioProcess.kill('SIGTERM'); } catch {}
+      queue.radioProcess = null;
+    }
+
+    // Spawn FFmpeg to convert the radio stream to Opus in OGG container
+    // This is exactly what Discord expects and eliminates any format issues
     const ffmpegProcess = spawn('ffmpeg', [
       '-reconnect', '1',
       '-reconnect_streamed', '1',
@@ -82,33 +89,32 @@ async function playRadio(guildId, station) {
       '-i', station.url,
       '-analyzeduration', '0',
       '-loglevel', '0',
-      '-f', 's16le',
       '-ar', '48000',
       '-ac', '2',
+      '-f', 'opus',
+      '-acodec', 'libopus',
+      '-b:a', '96k',
       'pipe:1',
-    ], { windowsHide: true });
+    ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 
     ffmpegProcess.on('error', (err) => {
       console.error('FFmpeg spawn error:', err.message);
       queue.textChannel.send(`❌ FFmpeg error: ${err.message}\nMake sure FFmpeg is installed and in your PATH.`);
     });
 
-    ffmpegProcess.stderr.on('data', (data) => {
-      // Only log actual errors, not info
-      const msg = data.toString();
-      if (msg.toLowerCase().includes('error')) {
-        console.error('FFmpeg:', msg);
+    ffmpegProcess.on('close', (code) => {
+      if (code !== 0 && code !== null) {
+        console.error('FFmpeg exited with code:', code);
       }
     });
 
-    const resource = createAudioResource(ffmpegProcess.stdout, {
-      inputType: StreamType.Raw,
-      inlineVolume: true,
-    });
+    // Wait a moment for ffmpeg to start producing data
+    await new Promise(resolve => setTimeout(resolve, 1000));
 
-    if (resource.volume) {
-      resource.volume.setVolumeLogarithmic(queue.volume / 100);
-    }
+    const resource = createAudioResource(ffmpegProcess.stdout, {
+      inputType: StreamType.OggOpus,
+      inlineVolume: false,
+    });
 
     queue.player.play(resource);
     queue.playing = true;

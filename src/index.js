@@ -7,10 +7,15 @@ const { handleCommand } = require('./commands');
 // Print dependency report on startup
 console.log(generateDependencyReport());
 
-// Initialize Spotify support (uses public API, no credentials needed for basic search)
+// Initialize play-dl with SoundCloud support
 async function initPlayDl() {
   try {
-    // Set SoundCloud as default for play-dl if no YouTube cookies
+    // Get a free SoundCloud client ID (required for searching)
+    const clientId = await play.getFreeClientID();
+    await play.setToken({ soundcloud: { client_id: clientId } });
+    console.log('✅ SoundCloud search enabled');
+
+    // Set Spotify if credentials provided
     if (process.env.SPOTIFY_CLIENT_ID && process.env.SPOTIFY_CLIENT_SECRET) {
       await play.setToken({
         spotify: {
@@ -21,8 +26,6 @@ async function initPlayDl() {
         },
       });
       console.log('✅ Spotify support enabled');
-    } else {
-      console.log('ℹ️ Spotify links will work with basic metadata (no SPOTIFY_CLIENT_ID set)');
     }
   } catch (e) {
     console.error('play-dl init error:', e.message);

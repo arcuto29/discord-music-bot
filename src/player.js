@@ -176,7 +176,7 @@ async function connectAndPlay(message, song) {
     channelId: voiceChannel.id,
     guildId: message.guild.id,
     adapterCreator: message.guild.voiceAdapterCreator,
-    selfDeaf: true, // Better audio quality
+    selfDeaf: false,
   });
 
   // Create audio player
@@ -258,7 +258,7 @@ async function connectAndPlayRadio(message, station) {
     channelId: voiceChannel.id,
     guildId: message.guild.id,
     adapterCreator: message.guild.voiceAdapterCreator,
-    selfDeaf: true,
+    selfDeaf: false,
   });
 
   const player = createAudioPlayer();

@@ -80,40 +80,54 @@ async function playRadio(guildId, station) {
       queue.radioProcess = null;
     }
 
-    // Spawn FFmpeg to convert the radio stream to Opus in OGG container
-    // This is exactly what Discord expects and eliminates any format issues
+    // Spawn FFmpeg to fetch radio stream and output raw PCM s16le
+    // Discord.js @discordjs/voice handles Raw PCM at 48kHz stereo
     const ffmpegProcess = spawn('ffmpeg', [
       '-reconnect', '1',
       '-reconnect_streamed', '1',
       '-reconnect_delay_max', '5',
       '-i', station.url,
       '-analyzeduration', '0',
-      '-loglevel', '0',
+      '-loglevel', 'error',
+      '-f', 's16le',
       '-ar', '48000',
       '-ac', '2',
-      '-f', 'opus',
-      '-acodec', 'libopus',
-      '-b:a', '96k',
       'pipe:1',
     ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 
+    let hasErrored = false;
+
     ffmpegProcess.on('error', (err) => {
+      hasErrored = true;
       console.error('FFmpeg spawn error:', err.message);
       queue.textChannel.send(`❌ FFmpeg error: ${err.message}\nMake sure FFmpeg is installed and in your PATH.`);
     });
 
-    ffmpegProcess.on('close', (code) => {
-      if (code !== 0 && code !== null) {
-        console.error('FFmpeg exited with code:', code);
-      }
+    ffmpegProcess.stderr.on('data', (data) => {
+      console.error('FFmpeg stderr:', data.toString());
     });
 
-    // Wait a moment for ffmpeg to start producing data
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    ffmpegProcess.on('close', (code) => {
+      console.log('FFmpeg process closed with code:', code);
+    });
+
+    // Wait for FFmpeg to connect and start producing audio data
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => resolve(), 3000);
+      ffmpegProcess.stdout.once('readable', () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+      ffmpegProcess.once('error', () => {
+        clearTimeout(timeout);
+        reject(new Error('FFmpeg failed to start'));
+      });
+    });
+
+    if (hasErrored) return;
 
     const resource = createAudioResource(ffmpegProcess.stdout, {
-      inputType: StreamType.OggOpus,
-      inlineVolume: false,
+      inputType: StreamType.Raw,
     });
 
     queue.player.play(resource);

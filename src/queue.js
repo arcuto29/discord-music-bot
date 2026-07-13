@@ -16,6 +16,7 @@ function getQueue(guildId) {
       loopQueue: false,
       volume: 100,
       radio: null,
+      radioProcess: null,
       textChannel: null,
     });
   }

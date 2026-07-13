@@ -192,6 +192,10 @@ function commandStop(message) {
   const queue = getQueue(message.guild.id);
   queue.songs = [];
   queue.radio = null;
+  if (queue.radioProcess) {
+    queue.radioProcess.kill('SIGTERM');
+    queue.radioProcess = null;
+  }
   if (queue.player) queue.player.stop();
   if (queue.connection) queue.connection.destroy();
   deleteQueue(message.guild.id);

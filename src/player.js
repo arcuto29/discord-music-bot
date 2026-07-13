@@ -72,8 +72,27 @@ async function playRadio(guildId, station) {
   const queue = getQueue(guildId);
 
   try {
-    const resource = createAudioResource(station.url, {
-      inputType: StreamType.Arbitrary,
+    // Use FFmpeg to handle the radio stream (mp3/aac/etc -> pcm)
+    const { spawn } = require('child_process');
+
+    const ffmpeg = spawn('ffmpeg', [
+      '-reconnect', '1',
+      '-reconnect_streamed', '1',
+      '-reconnect_delay_max', '5',
+      '-i', station.url,
+      '-f', 's16le',
+      '-ar', '48000',
+      '-ac', '2',
+      '-loglevel', 'error',
+      'pipe:1',
+    ]);
+
+    ffmpeg.stderr.on('data', (data) => {
+      console.error('FFmpeg radio error:', data.toString());
+    });
+
+    const resource = createAudioResource(ffmpeg.stdout, {
+      inputType: StreamType.Raw,
       inlineVolume: true,
     });
 
@@ -85,6 +104,7 @@ async function playRadio(guildId, station) {
     queue.playing = true;
     queue.paused = false;
     queue.radio = station;
+    queue.radioProcess = ffmpeg; // Store so we can kill it on stop
 
     queue.textChannel.send(
       `📻 **Radio: ${station.name}**\n` +

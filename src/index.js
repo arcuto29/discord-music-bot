@@ -2,6 +2,9 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, ActivityType } = require('discord.js');
 const { handleCommand } = require('./commands');
 
+// Ensure FFmpeg is discoverable by @discordjs/voice
+process.env.FFMPEG_PATH = process.env.FFMPEG_PATH || require('ffmpeg-static');
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,

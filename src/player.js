@@ -10,6 +10,14 @@ const {
 const play = require('play-dl');
 const { getQueue, deleteQueue } = require('./queue');
 
+// Get FFmpeg path - use ffmpeg-static if available, otherwise system ffmpeg
+let FFMPEG_PATH = 'ffmpeg';
+try {
+  FFMPEG_PATH = require('ffmpeg-static');
+} catch {
+  // Fall back to system ffmpeg
+}
+
 /**
  * Play the next song in the queue
  */
@@ -82,7 +90,7 @@ async function playRadio(guildId, station) {
 
     // Spawn FFmpeg to fetch radio stream and output raw PCM s16le
     // Discord.js @discordjs/voice handles Raw PCM at 48kHz stereo
-    const ffmpegProcess = spawn('ffmpeg', [
+    const ffmpegProcess = spawn(FFMPEG_PATH, [
       '-reconnect', '1',
       '-reconnect_streamed', '1',
       '-reconnect_delay_max', '5',

@@ -33,31 +33,46 @@ async function playSong(guildId, song) {
   }
 
   try {
-    // yt-dlp pipes audio directly, FFmpeg not needed for songs
-    const ytdlp = spawn('yt-dlp', [
-      '-f', 'bestaudio[ext=webm]/bestaudio',
-      '-o', '-',
-      '--quiet',
-      '--no-warnings',
-      '--no-playlist',
-      '--extractor-args', 'youtube:player_client=web_creator',
-      song.url,
-    ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    // Determine how to stream the audio
+    let process;
 
-    ytdlp.stderr.on('data', (d) => {
+    if (song.url.includes('soundcloud.com')) {
+      // SoundCloud: use yt-dlp (it supports SoundCloud without auth)
+      process = spawn('yt-dlp', [
+        '-f', 'bestaudio',
+        '-o', '-',
+        '--quiet',
+        '--no-warnings',
+        '--no-playlist',
+        song.url,
+      ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    } else {
+      // YouTube or other: use yt-dlp with web_creator bypass
+      process = spawn('yt-dlp', [
+        '-f', 'bestaudio[ext=webm]/bestaudio',
+        '-o', '-',
+        '--quiet',
+        '--no-warnings',
+        '--no-playlist',
+        '--extractor-args', 'youtube:player_client=web_creator',
+        song.url,
+      ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    }
+
+    process.stderr.on('data', (d) => {
       const msg = d.toString().trim();
       if (msg) console.error('yt-dlp:', msg);
     });
-    ytdlp.on('error', (e) => console.error('yt-dlp spawn error:', e.message));
+    process.on('error', (e) => console.error('yt-dlp spawn error:', e.message));
 
-    const resource = createAudioResource(ytdlp.stdout, {
+    const resource = createAudioResource(process.stdout, {
       inputType: StreamType.Arbitrary,
     });
 
     queue.player.play(resource);
     queue.playing = true;
     queue.paused = false;
-    queue.radioProcess = ytdlp;
+    queue.radioProcess = process;
 
     queue.textChannel.send(
       `🎶 **Now Playing:**\n` +

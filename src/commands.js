@@ -119,6 +119,12 @@ async function commandPlay(args, message) {
  * Resolve a query to song info — handles URLs and searches
  */
 async function resolveQuery(query, message) {
+  // If it's a Spotify URL, extract track/playlist info and search SoundCloud
+  if (query.includes('spotify.com')) {
+    return await resolveSpotify(query, message);
+  }
+
+  // If it's a YouTube URL, still use it (yt-dlp handles playback)
   const ytValidation = play.yt_validate(query);
 
   if (ytValidation === 'video') {
@@ -152,6 +158,7 @@ async function resolveQuery(query, message) {
     return songs[0];
   }
 
+  // SoundCloud direct link
   if (query.includes('soundcloud.com')) {
     const scType = await play.so_validate(query);
     if (scType === 'track') {
@@ -165,16 +172,37 @@ async function resolveQuery(query, message) {
     }
   }
 
-  // Search YouTube
-  const results = await play.search(query, { limit: 1 });
-  if (!results || results.length === 0) return null;
+  // Search SoundCloud first (doesn't require auth, always works)
+  try {
+    const scResults = await play.search(query, { source: { soundcloud: 'tracks' }, limit: 1 });
+    if (scResults && scResults.length > 0) {
+      return {
+        title: scResults[0].name,
+        url: scResults[0].url,
+        duration: formatDuration(scResults[0].durationInMs),
+        requestedBy: message.author.username,
+      };
+    }
+  } catch (e) {
+    console.error('SoundCloud search failed:', e.message);
+  }
 
-  return {
-    title: results[0].title,
-    url: results[0].url,
-    duration: results[0].durationRaw,
-    requestedBy: message.author.username,
-  };
+  // Fallback: search YouTube (may not work without cookies)
+  try {
+    const results = await play.search(query, { limit: 1 });
+    if (results && results.length > 0) {
+      return {
+        title: results[0].title,
+        url: results[0].url,
+        duration: results[0].durationRaw,
+        requestedBy: message.author.username,
+      };
+    }
+  } catch (e) {
+    console.error('YouTube search failed:', e.message);
+  }
+
+  return null;
 }
 
 
@@ -335,6 +363,110 @@ function commandClear(message) {
 }
 
 
+/**
+ * Resolve Spotify URLs — extracts song/playlist info and searches SoundCloud
+ * Spotify doesn't allow direct streaming, so we find the song elsewhere
+ */
+async function resolveSpotify(query, message) {
+  try {
+    if (play.sp_validate(query) === 'track') {
+      // Single Spotify track
+      const sp = await play.spotify(query);
+      const searchQuery = `${sp.name} ${sp.artists.map(a => a.name).join(' ')}`;
+      
+      // Search SoundCloud for this track
+      const results = await play.search(searchQuery, { source: { soundcloud: 'tracks' }, limit: 1 });
+      if (results && results.length > 0) {
+        return {
+          title: `${sp.name} — ${sp.artists.map(a => a.name).join(', ')}`,
+          url: results[0].url,
+          duration: formatDuration(sp.durationInMs),
+          requestedBy: message.author.username,
+        };
+      }
+      
+      // Fallback: search YouTube
+      const ytResults = await play.search(searchQuery, { limit: 1 });
+      if (ytResults && ytResults.length > 0) {
+        return {
+          title: `${sp.name} — ${sp.artists.map(a => a.name).join(', ')}`,
+          url: ytResults[0].url,
+          duration: ytResults[0].durationRaw,
+          requestedBy: message.author.username,
+        };
+      }
+
+      throw new Error('Could not find this track on any platform');
+    }
+
+    if (play.sp_validate(query) === 'playlist' || play.sp_validate(query) === 'album') {
+      // Spotify playlist or album
+      const sp = await play.spotify(query);
+      const tracks = await sp.all_tracks();
+      
+      if (!tracks || tracks.length === 0) throw new Error('Empty playlist');
+
+      message.channel.send(`🎵 **Loading Spotify playlist:** ${sp.name} (${tracks.length} tracks)...\nSearching for each track — this may take a moment.`);
+
+      const queue = getQueue(message.guild.id);
+      let loaded = 0;
+
+      for (let i = 0; i < tracks.length; i++) {
+        const track = tracks[i];
+        const searchQuery = `${track.name} ${track.artists.map(a => a.name).join(' ')}`;
+        
+        try {
+          const results = await play.search(searchQuery, { source: { soundcloud: 'tracks' }, limit: 1 });
+          if (results && results.length > 0) {
+            const songInfo = {
+              title: `${track.name} — ${track.artists.map(a => a.name).join(', ')}`,
+              url: results[0].url,
+              duration: formatDuration(track.durationInMs),
+              requestedBy: message.author.username,
+            };
+            
+            if (i === 0) {
+              // First track — will be returned and played
+            } else {
+              queue.songs.push(songInfo);
+            }
+            loaded++;
+          }
+        } catch {
+          // Skip tracks that can't be found
+        }
+
+        // Don't hit rate limits
+        if (i % 5 === 4) await new Promise(r => setTimeout(r, 1000));
+      }
+
+      message.channel.send(`✅ **Loaded ${loaded}/${tracks.length}** tracks from: ${sp.name}`);
+
+      // Return the first track
+      const firstTrack = tracks[0];
+      const searchQuery = `${firstTrack.name} ${firstTrack.artists.map(a => a.name).join(' ')}`;
+      const results = await play.search(searchQuery, { source: { soundcloud: 'tracks' }, limit: 1 });
+      
+      if (results && results.length > 0) {
+        return {
+          title: `${firstTrack.name} — ${firstTrack.artists.map(a => a.name).join(', ')}`,
+          url: results[0].url,
+          duration: formatDuration(firstTrack.durationInMs),
+          requestedBy: message.author.username,
+        };
+      }
+
+      throw new Error('Could not find first track');
+    }
+
+    throw new Error('Unsupported Spotify link type');
+  } catch (error) {
+    console.error('Spotify resolve error:', error);
+    throw new Error(`Spotify: ${error.message}`);
+  }
+}
+
+
 async function commandRadio(args, message) {
   const voiceChannel = message.member.voice.channel;
   if (!voiceChannel) return message.reply('❌ Join a voice channel first!');
@@ -460,9 +592,9 @@ function commandHelp(message) {
 **Shortcuts:** \`!p\`, \`!s\`, \`!q\`, \`!np\`, \`!dc\`, \`!vol\`, \`!h\`
 
 **Supported Links:**
-• YouTube videos & playlists
+• Spotify tracks & playlists
 • SoundCloud tracks
-• Direct audio URLs
+• YouTube videos & playlists
 • Search by song name
 
 *No ads. No votes. No limits. Just music.* 🎶

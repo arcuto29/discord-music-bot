@@ -149,14 +149,19 @@ async function playRadio(guildId, station) {
     queue.player.play(resource);
     queue.playing = true;
     queue.paused = false;
-    queue.radio = station;
     queue.radioProcess = ffmpegProcess;
 
-    queue.textChannel.send(
-      `📻 **Radio: ${station.name}**\n` +
-      `Genre: ${station.genre}\n` +
-      `🔊 Streaming live — use \`!stop\` to end`
-    );
+    // Only send the message if this is a new station (not a reconnect)
+    if (queue.radio !== station) {
+      queue.radio = station;
+      queue.textChannel.send(
+        `📻 **Radio: ${station.name}**\n` +
+        `Genre: ${station.genre}\n` +
+        `🔊 Streaming live — use \`.stop\` to end`
+      );
+    } else {
+      queue.radio = station;
+    }
   } catch (error) {
     console.error('Error playing radio:', error);
     queue.textChannel.send(`❌ Couldn't connect to radio station: ${error.message}`);
@@ -203,9 +208,17 @@ async function connectAndPlay(message, song) {
 
   // Handle when a song ends
   player.on(AudioPlayerStatus.Idle, () => {
-    // If radio was playing and got interrupted, restart it
+    // If radio was playing and got interrupted, DON'T auto-restart
+    // (prevents infinite reconnect loop if stream fails)
     if (queue.radio && queue.songs.length === 0) {
-      playRadio(message.guild.id, queue.radio);
+      // Only restart once after a delay, and only if still in radio mode
+      const currentStation = queue.radio;
+      setTimeout(() => {
+        if (queue.radio === currentStation && queue.connection) {
+          console.log('Radio stream ended, attempting reconnect...');
+          playRadio(message.guild.id, queue.radio);
+        }
+      }, 10000); // Wait 10 seconds before retry
       return;
     }
 
@@ -291,28 +304,22 @@ async function connectAndPlayRadio(message, station) {
 
   connection.subscribe(player);
 
-  // Handle when radio stream ends (reconnect)
+  // Handle when radio stream ends (don't spam reconnects)
   player.on(AudioPlayerStatus.Idle, () => {
     if (queue.radio) {
-      // Radio stream ended, restart it
+      const currentStation = queue.radio;
       setTimeout(() => {
-        if (queue.radio) {
+        if (queue.radio === currentStation && queue.connection) {
+          console.log('Radio stream ended, reconnecting...');
           playRadio(message.guild.id, queue.radio);
         }
-      }, 2000);
+      }, 10000);
     }
   });
 
   player.on('error', (error) => {
     console.error('Radio error:', error);
-    if (queue.radio) {
-      queue.textChannel.send('📻 Radio stream interrupted — reconnecting...');
-      setTimeout(() => {
-        if (queue.radio) {
-          playRadio(message.guild.id, queue.radio);
-        }
-      }, 3000);
-    }
+    // Don't spam reconnect messages
   });
 
   connection.on(VoiceConnectionStatus.Disconnected, async () => {

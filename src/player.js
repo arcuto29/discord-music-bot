@@ -7,16 +7,11 @@ const {
   entersState,
   StreamType,
 } = require('@discordjs/voice');
-const play = require('play-dl');
 const { getQueue, deleteQueue } = require('./queue');
+const { spawn } = require('child_process');
 
-// Get FFmpeg path - use ffmpeg-static if available, otherwise system ffmpeg
-let FFMPEG_PATH = 'ffmpeg';
-try {
-  FFMPEG_PATH = require('ffmpeg-static');
-} catch {
-  // Fall back to system ffmpeg
-}
+// Always use system FFmpeg
+const FFMPEG_PATH = '/usr/bin/ffmpeg';
 
 /**
  * Play the next song in the queue
@@ -38,35 +33,31 @@ async function playSong(guildId, song) {
   }
 
   try {
-    const { spawn } = require('child_process');
-
-    // yt-dlp pipes raw audio to stdout, discord.js handles the rest
-    const process = spawn('yt-dlp', [
-      '-f', 'bestaudio',
+    // yt-dlp pipes audio directly, FFmpeg not needed for songs
+    const ytdlp = spawn('yt-dlp', [
+      '-f', 'bestaudio[ext=webm]/bestaudio',
       '-o', '-',
       '--quiet',
       '--no-warnings',
+      '--no-playlist',
+      '--extractor-args', 'youtube:player_client=web_creator',
       song.url,
     ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 
-    process.stderr.on('data', (d) => console.error('yt-dlp:', d.toString()));
-    process.on('error', (e) => console.error('yt-dlp spawn error:', e.message));
+    ytdlp.stderr.on('data', (d) => {
+      const msg = d.toString().trim();
+      if (msg) console.error('yt-dlp:', msg);
+    });
+    ytdlp.on('error', (e) => console.error('yt-dlp spawn error:', e.message));
 
-    const resource = createAudioResource(process.stdout, {
+    const resource = createAudioResource(ytdlp.stdout, {
       inputType: StreamType.Arbitrary,
     });
-
-    resource.playStream.on('error', (e) => console.error('Stream error:', e));
 
     queue.player.play(resource);
     queue.playing = true;
     queue.paused = false;
-    queue.radioProcess = process;
-
-    // Log player state changes for debugging
-    queue.player.on('stateChange', (oldState, newState) => {
-      console.log(`Player: ${oldState.status} -> ${newState.status}`);
-    });
+    queue.radioProcess = ytdlp;
 
     queue.textChannel.send(
       `🎶 **Now Playing:**\n` +
@@ -77,7 +68,6 @@ async function playSong(guildId, song) {
   } catch (error) {
     console.error('Error playing song:', error);
     queue.textChannel.send(`❌ Couldn't play **${song.title}** — skipping.\nReason: ${error.message}`);
-
     queue.songs.shift();
     if (queue.songs.length > 0) {
       playSong(guildId, queue.songs[0]);
@@ -86,22 +76,22 @@ async function playSong(guildId, song) {
 }
 
 /**
- * Play a radio stream
+ * Play a radio stream using system FFmpeg
  */
 async function playRadio(guildId, station) {
   const queue = getQueue(guildId);
 
   try {
-    const { spawn } = require('child_process');
-
     // Kill any existing radio process
     if (queue.radioProcess) {
-      try { queue.radioProcess.kill('SIGTERM'); } catch {}
+      try { queue.radioProcess.kill('SIGKILL'); } catch {}
       queue.radioProcess = null;
     }
 
-    // Spawn FFmpeg to fetch and stream radio audio
-    const ffmpegProcess = spawn(FFMPEG_PATH, [
+    console.log(`Starting radio: ${station.name} - ${station.url}`);
+
+    // Use system FFmpeg to fetch and stream radio
+    const ffmpegProcess = spawn('/usr/bin/ffmpeg', [
       '-reconnect', '1',
       '-reconnect_streamed', '1',
       '-reconnect_delay_max', '5',
@@ -109,41 +99,50 @@ async function playRadio(guildId, station) {
       '-analyzeduration', '0',
       '-loglevel', 'error',
       '-vn',
-      '-f', 'mp3',
+      '-acodec', 'libopus',
+      '-f', 'ogg',
       '-ar', '48000',
       '-ac', '2',
+      '-b:a', '96k',
       'pipe:1',
-    ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-
-    let hasErrored = false;
-
-    ffmpegProcess.on('error', (err) => {
-      hasErrored = true;
-      console.error('FFmpeg spawn error:', err.message);
-      queue.textChannel.send(`❌ FFmpeg error: ${err.message}\nMake sure FFmpeg is installed and in your PATH.`);
-    });
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
     ffmpegProcess.stderr.on('data', (data) => {
-      console.error('FFmpeg stderr:', data.toString());
+      console.error('Radio FFmpeg error:', data.toString().trim());
+    });
+
+    ffmpegProcess.on('error', (err) => {
+      console.error('FFmpeg spawn failed:', err.message);
     });
 
     ffmpegProcess.on('close', (code) => {
-      console.log('FFmpeg radio closed with code:', code);
+      if (code !== 0 && code !== null) {
+        console.error('Radio FFmpeg exited with code:', code);
+      }
     });
 
-    // Wait for FFmpeg to start producing data
-    await new Promise((resolve) => {
-      const timeout = setTimeout(resolve, 5000);
-      ffmpegProcess.stdout.once('readable', () => {
+    // Wait for FFmpeg to produce data
+    const hasData = await new Promise((resolve) => {
+      const timeout = setTimeout(() => resolve(false), 8000);
+      ffmpegProcess.stdout.once('data', () => {
         clearTimeout(timeout);
-        resolve();
+        resolve(true);
+      });
+      ffmpegProcess.once('close', () => {
+        clearTimeout(timeout);
+        resolve(false);
       });
     });
 
-    if (hasErrored) return;
+    if (!hasData) {
+      console.error('Radio FFmpeg produced no data for:', station.url);
+      queue.textChannel.send(`❌ Couldn't connect to **${station.name}**. Stream may be unavailable.`);
+      queue.radio = null;
+      return;
+    }
 
     const resource = createAudioResource(ffmpegProcess.stdout, {
-      inputType: StreamType.Arbitrary,
+      inputType: StreamType.OggOpus,
     });
 
     queue.player.play(resource);
@@ -151,7 +150,7 @@ async function playRadio(guildId, station) {
     queue.paused = false;
     queue.radioProcess = ffmpegProcess;
 
-    // Only send the message if this is a new station (not a reconnect)
+    // Only send message for new station
     if (queue.radio !== station) {
       queue.radio = station;
       queue.textChannel.send(
@@ -170,13 +169,12 @@ async function playRadio(guildId, station) {
 }
 
 /**
- * Connect to a voice channel and set up the audio player
+ * Connect to voice channel and play a song
  */
 async function connectAndPlay(message, song) {
   const voiceChannel = message.member.voice.channel;
   const queue = getQueue(message.guild.id);
 
-  // Create voice connection
   const connection = joinVoiceChannel({
     channelId: voiceChannel.id,
     guildId: message.guild.id,
@@ -184,90 +182,80 @@ async function connectAndPlay(message, song) {
     selfDeaf: false,
   });
 
-  // Wait for the connection to be ready before doing anything
+  // Wait for connection to be ready
   try {
     await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
     console.log('Voice connection is Ready!');
   } catch (error) {
-    console.error('Voice connection failed to become ready:', error);
+    console.error('Voice connection failed:', error);
     connection.destroy();
     deleteQueue(message.guild.id);
     return message.channel.send('❌ Failed to connect to voice channel. Try again!');
   }
 
-  // Create audio player
   const player = createAudioPlayer();
 
-  // Store in queue
   queue.connection = connection;
   queue.player = player;
   queue.textChannel = message.channel;
 
-  // Subscribe the connection to the player
   connection.subscribe(player);
 
-  // Handle when a song ends
+  // When song ends
   player.on(AudioPlayerStatus.Idle, () => {
-    // If radio was playing and got interrupted, DON'T auto-restart
-    // (prevents infinite reconnect loop if stream fails)
+    // Radio reconnect (with delay to prevent spam)
     if (queue.radio && queue.songs.length === 0) {
-      // Only restart once after a delay, and only if still in radio mode
       const currentStation = queue.radio;
       setTimeout(() => {
         if (queue.radio === currentStation && queue.connection) {
-          console.log('Radio stream ended, attempting reconnect...');
           playRadio(message.guild.id, queue.radio);
         }
-      }, 10000); // Wait 10 seconds before retry
+      }, 15000);
       return;
     }
 
-    // Handle loop modes
+    // Loop modes
     if (queue.loop && queue.songs.length > 0) {
-      // Loop current song — play it again
       playSong(message.guild.id, queue.songs[0]);
       return;
     }
-
     if (queue.loopQueue && queue.songs.length > 0) {
-      // Loop queue — move current song to the end
       const finished = queue.songs.shift();
       queue.songs.push(finished);
       playSong(message.guild.id, queue.songs[0]);
       return;
     }
 
-    // Normal mode — move to next
+    // Next song
     queue.songs.shift();
     playSong(message.guild.id, queue.songs[0]);
   });
 
-  // Handle player errors
   player.on('error', (error) => {
-    console.error('Player error:', error);
-    queue.textChannel.send('❌ Playback error — skipping to next track.');
+    console.error('Player error:', error.message);
     queue.songs.shift();
     if (queue.songs.length > 0) {
       playSong(message.guild.id, queue.songs[0]);
     }
   });
 
-  // Handle disconnection
   connection.on(VoiceConnectionStatus.Disconnected, async () => {
     try {
       await Promise.race([
         entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
         entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
       ]);
-      // Reconnecting...
     } catch {
-      // Actually disconnected
       connection.destroy();
       deleteQueue(message.guild.id);
     }
   });
 
-  // Start playing
+  // Log state changes
+  player.on('stateChange', (oldState, newState) => {
+    console.log(`Player: ${oldState.status} -> ${newState.status}`);
+  });
+
   await playSong(message.guild.id, song);
 }
 
@@ -285,7 +273,6 @@ async function connectAndPlayRadio(message, station) {
     selfDeaf: false,
   });
 
-  // Wait for the connection to be ready
   try {
     await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
     console.log('Voice connection (radio) is Ready!');
@@ -304,22 +291,25 @@ async function connectAndPlayRadio(message, station) {
 
   connection.subscribe(player);
 
-  // Handle when radio stream ends (don't spam reconnects)
+  // Radio reconnect on idle (with delay)
   player.on(AudioPlayerStatus.Idle, () => {
     if (queue.radio) {
       const currentStation = queue.radio;
       setTimeout(() => {
         if (queue.radio === currentStation && queue.connection) {
-          console.log('Radio stream ended, reconnecting...');
+          console.log('Radio reconnecting...');
           playRadio(message.guild.id, queue.radio);
         }
-      }, 10000);
+      }, 15000);
     }
   });
 
   player.on('error', (error) => {
-    console.error('Radio error:', error);
-    // Don't spam reconnect messages
+    console.error('Radio player error:', error.message);
+  });
+
+  player.on('stateChange', (oldState, newState) => {
+    console.log(`Player: ${oldState.status} -> ${newState.status}`);
   });
 
   connection.on(VoiceConnectionStatus.Disconnected, async () => {

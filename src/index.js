@@ -3,10 +3,7 @@ const { Client, GatewayIntentBits, ActivityType } = require('discord.js');
 const { generateDependencyReport } = require('@discordjs/voice');
 const { handleCommand } = require('./commands');
 
-// Ensure FFmpeg is discoverable by @discordjs/voice
-process.env.FFMPEG_PATH = process.env.FFMPEG_PATH || require('ffmpeg-static');
-
-// Print dependency report so we can see what's working
+// Print dependency report on startup
 console.log(generateDependencyReport());
 
 const client = new Client({

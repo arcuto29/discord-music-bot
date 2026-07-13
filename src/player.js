@@ -72,26 +72,31 @@ async function playRadio(guildId, station) {
   const queue = getQueue(guildId);
 
   try {
-    // Use FFmpeg to handle the radio stream (mp3/aac/etc -> pcm)
-    const { spawn } = require('child_process');
+    const { exec } = require('child_process');
+    const { Readable } = require('stream');
 
-    const ffmpeg = spawn('ffmpeg', [
-      '-reconnect', '1',
-      '-reconnect_streamed', '1',
-      '-reconnect_delay_max', '5',
-      '-i', station.url,
-      '-f', 's16le',
-      '-ar', '48000',
-      '-ac', '2',
-      '-loglevel', 'error',
-      'pipe:1',
-    ]);
+    // Use prism-media (bundled with @discordjs/voice) for FFmpeg
+    const prism = require('prism-media');
 
-    ffmpeg.stderr.on('data', (data) => {
-      console.error('FFmpeg radio error:', data.toString());
+    const ffmpeg = new prism.FFmpeg({
+      args: [
+        '-reconnect', '1',
+        '-reconnect_streamed', '1',
+        '-reconnect_delay_max', '5',
+        '-i', station.url,
+        '-analyzeduration', '0',
+        '-loglevel', '0',
+        '-f', 's16le',
+        '-ar', '48000',
+        '-ac', '2',
+      ],
     });
 
-    const resource = createAudioResource(ffmpeg.stdout, {
+    ffmpeg.on('error', (err) => {
+      console.error('FFmpeg radio error:', err.message);
+    });
+
+    const resource = createAudioResource(ffmpeg, {
       inputType: StreamType.Raw,
       inlineVolume: true,
     });
@@ -104,7 +109,7 @@ async function playRadio(guildId, station) {
     queue.playing = true;
     queue.paused = false;
     queue.radio = station;
-    queue.radioProcess = ffmpeg; // Store so we can kill it on stop
+    queue.radioProcess = ffmpeg;
 
     queue.textChannel.send(
       `📻 **Radio: ${station.name}**\n` +

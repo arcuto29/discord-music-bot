@@ -39,21 +39,71 @@ async function playSong(guildId, song) {
   }
 
   try {
-    const stream = await play.stream(song.url);
+    const { spawn } = require('child_process');
 
-    const resource = createAudioResource(stream.stream, {
-      inputType: stream.type,
-      inlineVolume: true,
+    // Use FFmpeg to stream directly from the URL
+    // FFmpeg can handle YouTube URLs via its built-in protocol handlers
+    // But for YouTube we need yt-dlp to get the direct audio URL first
+    let audioUrl = song.url;
+
+    // If it's a YouTube URL, use yt-dlp to extract the direct audio URL
+    if (song.url.includes('youtube.com') || song.url.includes('youtu.be')) {
+      const ytdlp = spawn('yt-dlp', [
+        '--no-warnings',
+        '-f', 'bestaudio',
+        '--get-url',
+        song.url,
+      ], { windowsHide: true });
+
+      audioUrl = await new Promise((resolve, reject) => {
+        let data = '';
+        ytdlp.stdout.on('data', (chunk) => { data += chunk.toString(); });
+        ytdlp.on('close', (code) => {
+          if (code === 0 && data.trim()) {
+            resolve(data.trim().split('\n')[0]);
+          } else {
+            reject(new Error('yt-dlp failed to get URL'));
+          }
+        });
+        ytdlp.on('error', () => reject(new Error('yt-dlp not found. Install: https://github.com/yt-dlp/yt-dlp')));
+      });
+    }
+
+    // Now stream the audio URL through FFmpeg
+    const ffmpegProcess = spawn(FFMPEG_PATH, [
+      '-reconnect', '1',
+      '-reconnect_streamed', '1',
+      '-reconnect_delay_max', '5',
+      '-i', audioUrl,
+      '-analyzeduration', '0',
+      '-loglevel', 'error',
+      '-f', 's16le',
+      '-ar', '48000',
+      '-ac', '2',
+      'pipe:1',
+    ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+
+    ffmpegProcess.stderr.on('data', (data) => {
+      console.error('FFmpeg song error:', data.toString());
     });
 
-    // Set volume
-    if (resource.volume) {
-      resource.volume.setVolumeLogarithmic(queue.volume / 100);
-    }
+    // Wait for data
+    await new Promise((resolve) => {
+      const timeout = setTimeout(resolve, 3000);
+      ffmpegProcess.stdout.once('readable', () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+    });
+
+    const resource = createAudioResource(ffmpegProcess.stdout, {
+      inputType: StreamType.Raw,
+    });
 
     queue.player.play(resource);
     queue.playing = true;
     queue.paused = false;
+    queue.radioProcess = ffmpegProcess;
 
     queue.textChannel.send(
       `🎶 **Now Playing:**\n` +

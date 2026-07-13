@@ -179,6 +179,17 @@ async function connectAndPlay(message, song) {
     selfDeaf: false,
   });
 
+  // Wait for the connection to be ready before doing anything
+  try {
+    await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+    console.log('Voice connection is Ready!');
+  } catch (error) {
+    console.error('Voice connection failed to become ready:', error);
+    connection.destroy();
+    deleteQueue(message.guild.id);
+    return message.channel.send('❌ Failed to connect to voice channel. Try again!');
+  }
+
   // Create audio player
   const player = createAudioPlayer();
 
@@ -260,6 +271,17 @@ async function connectAndPlayRadio(message, station) {
     adapterCreator: message.guild.voiceAdapterCreator,
     selfDeaf: false,
   });
+
+  // Wait for the connection to be ready
+  try {
+    await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+    console.log('Voice connection (radio) is Ready!');
+  } catch (error) {
+    console.error('Voice connection failed:', error);
+    connection.destroy();
+    deleteQueue(message.guild.id);
+    return message.channel.send('❌ Failed to connect to voice channel. Try again!');
+  }
 
   const player = createAudioPlayer();
 
